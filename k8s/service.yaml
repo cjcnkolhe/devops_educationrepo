@@ -1,13 +1,19 @@
+
 apiVersion: v1
 kind: Service
+
 metadata:
-  name: education-service
-  namespace: education
+  name: educationapp-service
+  namespace: default
+
 spec:
   type: LoadBalancer
+
   selector:
     app: educationapp
+
   ports:
     - name: http
+      protocol: TCP
       port: 80
       targetPort: 8080
