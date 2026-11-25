@@ -9,12 +9,12 @@ pipeline {
 
     environment {
 
-        // Docker Configuration
+        // Docker Hub
         DOCKER_IMAGE = 'nanducjc123/educationapprepo'
-        DOCKER_TAG   = 'latest'
 
-        // SonarQube Configuration
+        // SonarQube
         SONAR_HOST = 'http://13.201.5.90:9000'
+        SONAR_PROJECT_KEY = 'educationapp'
 
         // AWS Configuration
         AWS_REGION = 'ap-south-1'
@@ -26,6 +26,7 @@ pipeline {
         CONTAINER = 'educationapp'
         SERVICE = 'educationapp-service'
 
+        // Kubeconfig
         KUBECONFIG = '/var/lib/jenkins/.kube/config'
     }
 
@@ -37,7 +38,7 @@ pipeline {
 
         stage('Git Checkout') {
             steps {
-                echo 'Checking out source code...'
+                echo 'Checking out GitHub Repository...'
                 checkout scm
             }
         }
@@ -52,6 +53,10 @@ pipeline {
 
                 sh '''
                     mvn clean package -DskipTests
+
+                    echo "Checking WAR File..."
+
+                    ls -lh target/*.war
                 '''
             }
         }
@@ -64,7 +69,7 @@ pipeline {
             steps {
                 withCredentials([
                     string(
-                        credentialsId: 'sonarqube-token',
+                        credentialsId: 'sonar-token',
                         variable: 'SONAR_TOKEN'
                     )
                 ]) {
@@ -76,10 +81,10 @@ pipeline {
                         mvn -B \
                         org.sonarsource.scanner.maven:sonar-maven-plugin:3.11.0.3922:sonar \
                         -Dsonar.host.url=${SONAR_HOST} \
-                        -Dsonar.projectKey=educationapp \
+                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                         -Dsonar.token="$SONAR_TOKEN"
 
-                        echo "SonarQube Analysis Successful!"
+                        echo "SonarQube Analysis Completed!"
                     '''
                 }
             }
@@ -95,8 +100,10 @@ pipeline {
 
                 sh '''
                     docker build \
-                    -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                    -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+                    -t ${DOCKER_IMAGE}:latest .
 
+                    docker images
                 '''
             }
         }
@@ -117,16 +124,16 @@ pipeline {
                     sh '''
                         set +x
 
-                        echo "Docker Hub Login..."
-
                         echo "$DOCKER_PASS" | docker login \
                         -u "$DOCKER_USER" --password-stdin
 
-                        docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+
+                        docker push ${DOCKER_IMAGE}:latest
 
                         docker logout
 
-                        echo "Docker Image Pushed Successfully!"
+                        echo "Docker Image Push Successful!"
                     '''
                 }
             }
@@ -150,15 +157,15 @@ pipeline {
 
                     export KUBECONFIG=${KUBECONFIG}
 
-                    echo "Checking EKS Cluster..."
+                    echo "Checking Cluster..."
 
                     kubectl cluster-info
 
-                    echo "Checking Kubernetes Nodes..."
+                    echo "Checking Nodes..."
 
                     kubectl get nodes -o wide
 
-                    echo "Creating Namespace if not exists..."
+                    echo "Creating Namespace..."
 
                     kubectl create namespace ${NAMESPACE} \
                     --dry-run=client -o yaml | kubectl apply -f -
@@ -180,15 +187,15 @@ pipeline {
                     echo "Creating Deployment..."
 
                     kubectl create deployment ${DEPLOYMENT} \
-                    --image=${DOCKER_IMAGE}:${DOCKER_TAG} \
+                    --image=${DOCKER_IMAGE}:${BUILD_NUMBER} \
                     --port=8080 \
                     -n ${NAMESPACE} \
                     --dry-run=client -o yaml | kubectl apply -f -
 
-                    echo "Setting Container Image..."
+                    echo "Updating Container Image..."
 
                     kubectl set image deployment/${DEPLOYMENT} \
-                    ${CONTAINER}=${DOCKER_IMAGE}:${DOCKER_TAG} \
+                    ${CONTAINER}=${DOCKER_IMAGE}:${BUILD_NUMBER} \
                     -n ${NAMESPACE}
 
                     echo "Setting Image Pull Policy..."
@@ -213,7 +220,7 @@ pipeline {
         }
 
         // --------------------------------
-        // 8. Verify EKS Deployment
+        // 8. Verify Deployment
         // --------------------------------
 
         stage('EKS Deployment Verification') {
@@ -239,14 +246,14 @@ pipeline {
 
                     kubectl get services -n ${NAMESPACE}
 
-                    echo "Application Deployment Successful!"
+                    echo "EKS Deployment Successful!"
                 '''
             }
         }
     }
 
     // --------------------------------
-    // 9. Post Build Actions
+    // 9. Post Actions
     // --------------------------------
 
     post {
@@ -254,15 +261,15 @@ pipeline {
         success {
             echo '''
             ==========================================
-                 JENKINS PIPELINE SUCCESS!
+                JENKINS PIPELINE SUCCESS!
             ==========================================
-                 Git Checkout       : SUCCESS
-                 Maven Build        : SUCCESS
-                 SonarQube Analysis : SUCCESS
-                 Docker Build       : SUCCESS
-                 Docker Hub Push    : SUCCESS
-                 AWS EKS Connection : SUCCESS
-                 Kubernetes Deploy : SUCCESS
+                Git Checkout       : SUCCESS
+                Maven Build        : SUCCESS
+                SonarQube Analysis : SUCCESS
+                Docker Build       : SUCCESS
+                Docker Push        : SUCCESS
+                AWS EKS Connection : SUCCESS
+                Kubernetes Deploy : SUCCESS
             ==========================================
             '''
         }
@@ -270,8 +277,8 @@ pipeline {
         failure {
             echo '''
             ==========================================
-                 JENKINS PIPELINE FAILED!
-                 Check Console Output.
+                JENKINS PIPELINE FAILED!
+                Check Console Output.
             ==========================================
             '''
         }
