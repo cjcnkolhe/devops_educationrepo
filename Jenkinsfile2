@@ -10,14 +10,20 @@ pipeline {
     environment {
         DOCKER_IMAGE     = 'nanducjc123/educationapprepo'
         SONAR_HOST       = 'http://13.201.5.90:9000'
-        EKS_CLUSTER_NAME = 'education-eks-cluster'
+
         AWS_REGION       = 'ap-south-1'
+        EKS_CLUSTER_NAME = 'java-eks-cluster'
+
         K8S_NAMESPACE    = 'default'
         DEPLOYMENT_NAME  = 'educationapp'
         CONTAINER_NAME   = 'educationapp'
     }
 
     stages {
+
+        // --------------------------------
+        // 1. Git Checkout
+        // --------------------------------
 
         stage('Git Checkout') {
             steps {
@@ -26,11 +32,19 @@ pipeline {
             }
         }
 
+        // --------------------------------
+        // 2. Maven Build
+        // --------------------------------
+
         stage('Maven Build') {
             steps {
                 sh 'mvn clean package'
             }
         }
+
+        // --------------------------------
+        // 3. SonarQube Analysis
+        // --------------------------------
 
         stage('SonarQube Analysis') {
             steps {
@@ -51,6 +65,10 @@ pipeline {
             }
         }
 
+        // --------------------------------
+        // 4. Docker Build
+        // --------------------------------
+
         stage('Docker Build') {
             steps {
                 sh '''
@@ -60,6 +78,10 @@ pipeline {
                 '''
             }
         }
+
+        // --------------------------------
+        // 5. Docker Login & Push
+        // --------------------------------
 
         stage('Docker Login & Push') {
             steps {
@@ -86,9 +108,15 @@ pipeline {
             }
         }
 
+        // --------------------------------
+        // 6. AWS EKS Connection
+        // --------------------------------
+
         stage('AWS EKS Connect') {
             steps {
                 sh '''
+                    echo "Connecting to AWS EKS..."
+
                     aws --version
                     kubectl version --client
 
@@ -96,26 +124,44 @@ pipeline {
                         --region $AWS_REGION \
                         --name $EKS_CLUSTER_NAME
 
-                    echo "Connected to EKS Cluster"
+                    echo "Checking EKS Cluster..."
+
+                    kubectl cluster-info
+
+                    echo "Checking Kubernetes Nodes..."
 
                     kubectl get nodes
                 '''
             }
         }
 
+        // --------------------------------
+        // 7. Deploy to EKS
+        // --------------------------------
+
         stage('Deploy to EKS') {
             steps {
                 sh '''
-                    kubectl apply -f k8s/deployment.yaml \
+                    echo "Applying Kubernetes Deployment..."
+
+                    kubectl apply \
+                        -f k8s/deployment.yaml \
                         -n $K8S_NAMESPACE
 
-                    kubectl apply -f k8s/service.yaml \
+                    echo "Applying Kubernetes Service..."
+
+                    kubectl apply \
+                        -f k8s/service.yaml \
                         -n $K8S_NAMESPACE
+
+                    echo "Updating Docker Image..."
 
                     kubectl set image \
                         deployment/$DEPLOYMENT_NAME \
                         $CONTAINER_NAME=$DOCKER_IMAGE:$BUILD_NUMBER \
                         -n $K8S_NAMESPACE
+
+                    echo "Waiting for Deployment..."
 
                     kubectl rollout status \
                         deployment/$DEPLOYMENT_NAME \
@@ -125,38 +171,66 @@ pipeline {
             }
         }
 
+        // --------------------------------
+        // 8. EKS Deployment Verification
+        // --------------------------------
+
         stage('EKS Deployment Verification') {
             steps {
                 sh '''
-                    echo "===== EKS NODES ====="
+                    echo "========== EKS NODES =========="
+
                     kubectl get nodes -o wide
 
-                    echo "===== PODS ====="
-                    kubectl get pods -n $K8S_NAMESPACE -o wide
+                    echo "========== PODS =========="
 
-                    echo "===== DEPLOYMENT ====="
-                    kubectl get deployment -n $K8S_NAMESPACE
+                    kubectl get pods \
+                        -n $K8S_NAMESPACE -o wide
 
-                    echo "===== SERVICE ====="
-                    kubectl get service -n $K8S_NAMESPACE
+                    echo "========== DEPLOYMENT =========="
+
+                    kubectl get deployment \
+                        -n $K8S_NAMESPACE
+
+                    echo "========== SERVICES =========="
+
+                    kubectl get services \
+                        -n $K8S_NAMESPACE
+
+                    echo "========== APPLICATION STATUS =========="
+
+                    kubectl rollout status \
+                        deployment/$DEPLOYMENT_NAME \
+                        -n $K8S_NAMESPACE
                 '''
             }
         }
     }
 
+    // --------------------------------
+    // POST ACTIONS
+    // --------------------------------
+
     post {
+
         success {
-            echo 'Pipeline completed successfully!'
-            echo 'Application deployed successfully to AWS EKS!'
+            echo '======================================'
+            echo 'JENKINS PIPELINE SUCCESSFUL!'
+            echo 'Docker Image Pushed Successfully!'
+            echo 'Application Deployed to AWS EKS!'
+            echo 'Cluster: java-eks-cluster'
+            echo '======================================'
         }
 
         failure {
-            echo 'Pipeline failed!'
-            echo 'Check Jenkins console output for errors.'
+            echo '======================================'
+            echo 'JENKINS PIPELINE FAILED!'
+            echo 'Check Jenkins Console Output.'
+            echo '======================================'
         }
 
         always {
-            echo 'Jenkins pipeline execution finished.'
+            echo 'Jenkins Pipeline Execution Finished.'
         }
     }
 }
