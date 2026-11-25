@@ -17,6 +17,10 @@ pipeline {
         K8S_NAMESPACE    = 'default'
         DEPLOYMENT_NAME  = 'educationapp'
         CONTAINER_NAME   = 'educationapp'
+
+        // Jenkins kubectl configuration
+        KUBECONFIG       = '/var/lib/jenkins/.kube/config'
+        PATH             = "/usr/local/bin:${env.PATH}"
     }
 
     stages {
@@ -38,7 +42,10 @@ pipeline {
 
         stage('Maven Build') {
             steps {
-                sh 'mvn clean package'
+                sh '''
+                    echo "Building Spring Boot Application..."
+                    mvn clean package
+                '''
             }
         }
 
@@ -72,6 +79,8 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
+                    echo "Building Docker Image..."
+
                     docker build \
                         -t $DOCKER_IMAGE:$BUILD_NUMBER \
                         -t $DOCKER_IMAGE:latest .
@@ -115,22 +124,29 @@ pipeline {
         stage('AWS EKS Connect') {
             steps {
                 sh '''
-                    echo "Connecting to AWS EKS..."
+                    set -e
 
+                    echo "Checking AWS CLI..."
                     aws --version
+
+                    echo "Checking kubectl..."
                     kubectl version --client
+
+                    echo "Checking AWS Identity..."
+                    aws sts get-caller-identity
+
+                    echo "Connecting to AWS EKS..."
 
                     aws eks update-kubeconfig \
                         --region $AWS_REGION \
-                        --name $EKS_CLUSTER_NAME
+                        --name $EKS_CLUSTER_NAME \
+                        --kubeconfig $KUBECONFIG
 
                     echo "Checking EKS Cluster..."
-
                     kubectl cluster-info
 
                     echo "Checking Kubernetes Nodes..."
-
-                    kubectl get nodes
+                    kubectl get nodes -o wide
                 '''
             }
         }
@@ -142,6 +158,8 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 sh '''
+                    set -e
+
                     echo "Applying Kubernetes Deployment..."
 
                     kubectl apply \
@@ -178,6 +196,8 @@ pipeline {
         stage('EKS Deployment Verification') {
             steps {
                 sh '''
+                    set -e
+
                     echo "========== EKS NODES =========="
 
                     kubectl get nodes -o wide
@@ -201,7 +221,8 @@ pipeline {
 
                     kubectl rollout status \
                         deployment/$DEPLOYMENT_NAME \
-                        -n $K8S_NAMESPACE
+                        -n $K8S_NAMESPACE \
+                        --timeout=300s
                 '''
             }
         }
