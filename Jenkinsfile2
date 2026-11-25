@@ -8,21 +8,21 @@ pipeline {
     }
 
     environment {
-        // Docker Hub Configuration
+
+        // Docker Hub
         DOCKER_IMAGE = 'nanducjc123/educationapprepo'
 
-        // SonarQube Configuration
+        // SonarQube
         SONAR_HOST = 'http://13.201.5.90:9000'
         SONAR_PROJECT_KEY = 'my-project'
 
-        // AWS EKS Configuration
+        // AWS EKS
         AWS_REGION = 'ap-south-1'
         EKS_CLUSTER = 'java-eks-cluster'
         K8S_NAMESPACE = 'default'
 
-        // Kubernetes Application Configuration
+        // Kubernetes
         APP_NAME = 'educationapp'
-        APP_PORT = '8080'
         SERVICE_NAME = 'educationapp-service'
     }
 
@@ -40,13 +40,8 @@ pipeline {
         stage('Maven Build') {
             steps {
                 sh '''
-                    echo "Checking Java Version..."
                     java -version
-
-                    echo "Checking Maven Version..."
                     mvn -version
-
-                    echo "Building Spring Boot Application..."
 
                     mvn clean package
                 '''
@@ -63,16 +58,12 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        echo "Starting SonarQube Analysis..."
-
                         mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
                         -Dsonar.projectKey=$SONAR_PROJECT_KEY \
                         -Dsonar.projectName=$SONAR_PROJECT_KEY \
                         -Dsonar.host.url=$SONAR_HOST \
                         -Dsonar.token=$SONAR_TOKEN \
                         -Dsonar.java.binaries=target/classes
-
-                        echo "SonarQube Analysis Completed!"
                     '''
                 }
             }
@@ -82,13 +73,9 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
-                    echo "Building Docker Image..."
-
                     docker build \
                     -t $DOCKER_IMAGE:$BUILD_NUMBER \
                     -t $DOCKER_IMAGE:latest .
-
-                    echo "Docker Build Completed!"
                 '''
             }
         }
@@ -110,14 +97,10 @@ pipeline {
                         -u "$DOCKER_USER" \
                         --password-stdin
 
-                        echo "Pushing Docker Image..."
-
                         docker push $DOCKER_IMAGE:$BUILD_NUMBER
                         docker push $DOCKER_IMAGE:latest
 
                         docker logout
-
-                        echo "Docker Push Completed!"
                     '''
                 }
             }
@@ -127,135 +110,88 @@ pipeline {
         stage('AWS EKS Connect') {
             steps {
                 sh '''
-                    echo "Checking AWS CLI..."
-
                     aws --version
-
-                    echo "Checking kubectl..."
-
                     kubectl version --client
 
-                    echo "Checking AWS Identity..."
-
                     aws sts get-caller-identity
-
-                    echo "Connecting to AWS EKS..."
 
                     aws eks update-kubeconfig \
                     --region $AWS_REGION \
                     --name $EKS_CLUSTER
 
-                    echo "Checking EKS Nodes..."
-
                     kubectl get nodes
 
-                    echo "Checking Kubernetes Namespace..."
-
                     kubectl get namespace $K8S_NAMESPACE
-
-                    echo "EKS Connection Successful!"
                 '''
             }
         }
 
         // 7. Kubernetes Deployment
-        stage('EKS Deploy') {
+        stage('Kubernetes Deployment') {
             steps {
                 sh '''
-                    echo "Deploying Application to EKS..."
+                    echo "Applying Deployment YAML..."
 
-                    kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: educationapp
-  namespace: default
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: educationapp
-  template:
-    metadata:
-      labels:
-        app: educationapp
-    spec:
-      containers:
-      - name: educationapp
-        image: nanducjc123/educationapprepo:${BUILD_NUMBER}
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8080
-EOF
+                    kubectl apply -f k8s/deployment.yaml \
+                    -n $K8S_NAMESPACE
 
-                    echo "Creating Kubernetes Service..."
+                    echo "Updating Docker Image..."
 
-                    kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: educationapp-service
-  namespace: default
-spec:
-  type: LoadBalancer
-  selector:
-    app: educationapp
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 8080
-EOF
+                    kubectl set image deployment/$APP_NAME \
+                    $APP_NAME=$DOCKER_IMAGE:$BUILD_NUMBER \
+                    -n $K8S_NAMESPACE
 
-                    echo "Kubernetes Deployment Applied!"
+                    echo "Deployment YAML Applied!"
                 '''
             }
         }
 
-        // 8. EKS Deployment Verification
+        // 8. Kubernetes Service
+        stage('Kubernetes Service') {
+            steps {
+                sh '''
+                    echo "Applying Service YAML..."
+
+                    kubectl apply -f k8s/service.yaml \
+                    -n $K8S_NAMESPACE
+
+                    echo "Service YAML Applied!"
+                '''
+            }
+        }
+
+        // 9. EKS Verification
         stage('EKS Verification') {
             steps {
                 sh '''
-                    echo "Waiting for Deployment Rollout..."
+                    echo "Waiting for Deployment..."
 
                     kubectl rollout status deployment/$APP_NAME \
                     -n $K8S_NAMESPACE \
                     --timeout=300s
 
-                    echo "Checking Deployments..."
-
-                    kubectl get deployments \
-                    -n $K8S_NAMESPACE
-
                     echo "Checking Pods..."
 
-                    kubectl get pods \
-                    -n $K8S_NAMESPACE -o wide
+                    kubectl get pods -n $K8S_NAMESPACE -o wide
+
+                    echo "Checking Deployment..."
+
+                    kubectl get deployments -n $K8S_NAMESPACE
 
                     echo "Checking Services..."
 
-                    kubectl get services \
-                    -n $K8S_NAMESPACE
-
-                    echo "Checking Deployment Details..."
-
-                    kubectl describe deployment $APP_NAME \
-                    -n $K8S_NAMESPACE
-
-                    echo "EKS Verification Completed!"
+                    kubectl get svc -n $K8S_NAMESPACE
                 '''
             }
         }
 
-        // 9. LoadBalancer Verification
+        // 10. LoadBalancer Verification
         stage('LoadBalancer Verification') {
             steps {
                 sh '''
-                    echo "Checking LoadBalancer..."
+                    echo "Waiting for LoadBalancer DNS..."
 
-                    kubectl get svc $SERVICE_NAME \
-                    -n $K8S_NAMESPACE
-
-                    echo "Waiting for LoadBalancer External Address..."
+                    LB_HOST=""
 
                     for i in $(seq 1 20); do
 
@@ -270,7 +206,7 @@ EOF
                         fi
 
                         if [ -n "$LB_HOST" ]; then
-                            echo "LoadBalancer Address: $LB_HOST"
+                            echo "Application URL: http://$LB_HOST"
                             break
                         fi
 
@@ -279,15 +215,14 @@ EOF
                     done
 
                     if [ -z "$LB_HOST" ]; then
-                        echo "LoadBalancer address is still pending."
-                        echo "Check Kubernetes Service and AWS Load Balancer provisioning."
+                        echo "LoadBalancer address is pending."
+                        exit 1
                     fi
                 '''
             }
         }
     }
 
-    // Post Actions
     post {
 
         success {
@@ -297,20 +232,18 @@ EOF
 
             echo 'Maven Build: SUCCESS'
             echo 'SonarQube Analysis: SUCCESS'
-            echo 'Docker Build: SUCCESS'
             echo 'Docker Hub Push: SUCCESS'
             echo 'AWS EKS Connection: SUCCESS'
             echo 'Kubernetes Deployment: SUCCESS'
+            echo 'Kubernetes Service: SUCCESS'
             echo 'Application: educationapp'
             echo 'Replicas: 2'
             echo 'Namespace: default'
         }
 
         failure {
-            echo '======================================'
             echo 'PIPELINE EXECUTION FAILED!'
             echo 'Check Jenkins Console Output!'
-            echo '======================================'
         }
 
         always {
