@@ -59,16 +59,26 @@ pipeline {
         // 3. SonarQube Analysis
         // --------------------------------
 
-        stage('SonarQube Analysis') {
-            steps {
-                sh '''
-                    echo "Running SonarQube Analysis..."
+       stage('SonarQube Analysis') {
+    steps {
+        withCredentials([
+            string(
+                credentialsId: 'sonarqube-token',
+                variable: 'SONAR_TOKEN'
+            )
+        ]) {
+            sh '''
+                echo "Starting SonarQube Analysis..."
 
-                    mvn sonar:sonar \
-                    -Dsonar.host.url=${SONAR_HOST}
-                '''
-            }
+                mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.11.0.3922:sonar \
+                -Dsonar.host.url=${SONAR_HOST} \
+                -Dsonar.token=${SONAR_TOKEN}
+
+                echo "SonarQube Analysis Completed!"
+            '''
         }
+    }
+}
 
         // --------------------------------
         // 4. Docker Build
