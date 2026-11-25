@@ -4,68 +4,53 @@ pipeline {
 
     tools {
         maven 'Maven'
-        jdk 'JDK17'
     }
 
     environment {
-
-        // Docker Hub
         DOCKER_IMAGE = 'nanducjc123/educationapprepo'
+        SONAR_HOST = 'http://13.233.123.235:9000'
+        SONAR_PROJECT_KEY = 'my-project'
 
-        // SonarQube
-        SONAR_HOST = 'http://13.201.5.90:9000'
-        SONAR_PROJECT_KEY = 'educationapp'
-
-        // AWS Configuration
-        AWS_REGION = 'ap-south-1'
-        EKS_CLUSTER = 'java-eks-cluster'
-
-        // Kubernetes Configuration
-        NAMESPACE = 'education'
-        DEPLOYMENT = 'educationapp'
-        CONTAINER = 'educationapp'
-        SERVICE = 'educationapp-service'
-
-        // Kubeconfig
-        KUBECONFIG = '/var/lib/jenkins/.kube/config'
+        CONTAINER_NAME = 'educationapp'
+        APP_PORT = '8080'
+        HOST_PORT = '8081'
     }
 
     stages {
 
-        // --------------------------------
+        // -----------------------------
         // 1. Git Checkout
-        // --------------------------------
-
+        // -----------------------------
         stage('Git Checkout') {
             steps {
-                echo 'Checking out GitHub Repository...'
-                checkout scm
+                git branch: 'master',
+                    url: 'https://github.com/cjcnkolhe/educationapp.git'
             }
         }
 
-        // --------------------------------
+        // -----------------------------
         // 2. Maven Build
-        // --------------------------------
-
+        // -----------------------------
         stage('Maven Build') {
+            tools {
+                jdk 'JDK17'
+            }
             steps {
-                echo 'Building Spring Boot Application...'
-
                 sh '''
-                    mvn clean package -DskipTests
-
-                    echo "Checking WAR File..."
-
-                    ls -lh target/*.war
+                    java -version
+                    mvn -version
+                    mvn clean package
                 '''
             }
         }
 
-        // --------------------------------
+        // -----------------------------
         // 3. SonarQube Analysis
-        // --------------------------------
-
+        // -----------------------------
         stage('SonarQube Analysis') {
+            tools {
+                jdk 'JDK21'
+            }
             steps {
                 withCredentials([
                     string(
@@ -74,45 +59,36 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        set +x
+                        java -version
 
-                        echo "Starting SonarQube Analysis..."
-
-                        mvn -B \
-                        org.sonarsource.scanner.maven:sonar-maven-plugin:3.11.0.3922:sonar \
-                        -Dsonar.host.url=${SONAR_HOST} \
-                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                        -Dsonar.token="$SONAR_TOKEN"
-
-                        echo "SonarQube Analysis Completed!"
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+                        -Dsonar.projectKey=$SONAR_PROJECT_KEY \
+                        -Dsonar.projectName=$SONAR_PROJECT_KEY \
+                        -Dsonar.host.url=$SONAR_HOST \
+                        -Dsonar.token=$SONAR_TOKEN \
+                        -Dsonar.java.binaries=target/classes
                     '''
                 }
             }
         }
 
-        // --------------------------------
+        // -----------------------------
         // 4. Docker Build
-        // --------------------------------
-
+        // -----------------------------
         stage('Docker Build') {
             steps {
-                echo 'Building Docker Image...'
-
                 sh '''
                     docker build \
-                    -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                    -t ${DOCKER_IMAGE}:latest .
-
-                    docker images
+                    -t $DOCKER_IMAGE:$BUILD_NUMBER \
+                    -t $DOCKER_IMAGE:latest .
                 '''
             }
         }
 
-        // --------------------------------
-        // 5. Docker Hub Push
-        // --------------------------------
-
-        stage('Docker Push') {
+        // -----------------------------
+        // 5. Docker Login & Push
+        // -----------------------------
+        stage('Docker Login & Push') {
             steps {
                 withCredentials([
                     usernamePassword(
@@ -127,164 +103,95 @@ pipeline {
                         echo "$DOCKER_PASS" | docker login \
                         -u "$DOCKER_USER" --password-stdin
 
-                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
-
-                        docker push ${DOCKER_IMAGE}:latest
+                        docker push $DOCKER_IMAGE:$BUILD_NUMBER
+                        docker push $DOCKER_IMAGE:latest
 
                         docker logout
-
-                        echo "Docker Image Push Successful!"
                     '''
                 }
             }
         }
 
-        // --------------------------------
-        // 6. Connect to AWS EKS
-        // --------------------------------
-
-        stage('Connect to EKS') {
+        // -----------------------------
+        // 6. Docker Pull
+        // -----------------------------
+        stage('Docker Pull') {
             steps {
                 sh '''
-                    echo "Connecting to AWS EKS..."
-
-                    mkdir -p /var/lib/jenkins/.kube
-
-                    aws eks update-kubeconfig \
-                    --region ${AWS_REGION} \
-                    --name ${EKS_CLUSTER} \
-                    --kubeconfig ${KUBECONFIG}
-
-                    export KUBECONFIG=${KUBECONFIG}
-
-                    echo "Checking Cluster..."
-
-                    kubectl cluster-info
-
-                    echo "Checking Nodes..."
-
-                    kubectl get nodes -o wide
-
-                    echo "Creating Namespace..."
-
-                    kubectl create namespace ${NAMESPACE} \
-                    --dry-run=client -o yaml | kubectl apply -f -
-
-                    echo "Namespace Ready!"
+                    docker pull $DOCKER_IMAGE:$BUILD_NUMBER
                 '''
             }
         }
 
-        // --------------------------------
-        // 7. Deploy Application to EKS
-        // --------------------------------
-
-        stage('Deploy to EKS') {
+        // -----------------------------
+        // 7. Docker Run / Deploy
+        // -----------------------------
+        stage('Docker Run / Deploy') {
             steps {
                 sh '''
-                    export KUBECONFIG=${KUBECONFIG}
+                    docker rm -f $CONTAINER_NAME || true
 
-                    echo "Creating Deployment..."
+                    docker run -d \
+                    --name $CONTAINER_NAME \
+                    --restart unless-stopped \
+                    -p $HOST_PORT:$APP_PORT \
+                    $DOCKER_IMAGE:$BUILD_NUMBER
 
-                    kubectl create deployment ${DEPLOYMENT} \
-                    --image=${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                    --port=8080 \
-                    -n ${NAMESPACE} \
-                    --dry-run=client -o yaml | kubectl apply -f -
+                    sleep 15
 
-                    echo "Updating Container Image..."
+                    docker ps -a
 
-                    kubectl set image deployment/${DEPLOYMENT} \
-                    ${CONTAINER}=${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                    -n ${NAMESPACE}
+                    docker logs --tail 50 $CONTAINER_NAME
 
-                    echo "Setting Image Pull Policy..."
-
-                    kubectl patch deployment ${DEPLOYMENT} \
-                    -n ${NAMESPACE} \
-                    -p '{"spec":{"template":{"spec":{"containers":[{"name":"educationapp","imagePullPolicy":"Always"}]}}}}'
-
-                    echo "Creating LoadBalancer Service..."
-
-                    kubectl expose deployment ${DEPLOYMENT} \
-                    --name=${SERVICE} \
-                    --type=LoadBalancer \
-                    --port=80 \
-                    --target-port=8080 \
-                    -n ${NAMESPACE} \
-                    --dry-run=client -o yaml | kubectl apply -f -
-
-                    echo "Deployment Commands Completed!"
+                    docker inspect \
+                    --format='{{.State.Status}}' \
+                    $CONTAINER_NAME
                 '''
             }
         }
 
-        // --------------------------------
-        // 8. Verify Deployment
-        // --------------------------------
-
-        stage('EKS Deployment Verification') {
+        // -----------------------------
+        // 8. Application Verification
+        // -----------------------------
+        stage('Application Verification') {
             steps {
                 sh '''
-                    export KUBECONFIG=${KUBECONFIG}
+                    echo "Checking application..."
 
-                    echo "Checking Deployment Rollout..."
+                    for i in $(seq 1 12); do
+                        if curl -fsS http://localhost:$HOST_PORT/; then
+                            echo "Application is responding!"
+                            exit 0
+                        fi
 
-                    kubectl rollout status deployment/${DEPLOYMENT} \
-                    -n ${NAMESPACE} \
-                    --timeout=300s
+                        echo "Waiting for application..."
+                        sleep 5
+                    done
 
-                    echo "Checking Pods..."
-
-                    kubectl get pods -n ${NAMESPACE} -o wide
-
-                    echo "Checking Deployment..."
-
-                    kubectl get deployments -n ${NAMESPACE}
-
-                    echo "Checking Services..."
-
-                    kubectl get services -n ${NAMESPACE}
-
-                    echo "EKS Deployment Successful!"
+                    echo "Application health check failed!"
+                    docker logs --tail 100 $CONTAINER_NAME
+                    exit 1
                 '''
             }
         }
     }
 
-    // --------------------------------
-    // 9. Post Actions
-    // --------------------------------
-
+    // -----------------------------
+    // Post Actions
+    // -----------------------------
     post {
-
         success {
-            echo '''
-            ==========================================
-                JENKINS PIPELINE SUCCESS!
-            ==========================================
-                Git Checkout       : SUCCESS
-                Maven Build        : SUCCESS
-                SonarQube Analysis : SUCCESS
-                Docker Build       : SUCCESS
-                Docker Push        : SUCCESS
-                AWS EKS Connection : SUCCESS
-                Kubernetes Deploy : SUCCESS
-            ==========================================
-            '''
+            echo 'Pipeline completed successfully!'
+            echo 'Docker application deployed successfully!'
+            echo 'Application Port: 8081'
         }
 
         failure {
-            echo '''
-            ==========================================
-                JENKINS PIPELINE FAILED!
-                Check Console Output.
-            ==========================================
-            '''
+            echo 'Pipeline failed!'
         }
 
         always {
-            echo 'Jenkins Pipeline Execution Finished.'
+            echo 'Jenkins pipeline execution finished.'
         }
     }
 }
