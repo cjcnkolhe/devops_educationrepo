@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: educationapp
-          image: nanducjc123/educationrepo:latest
+          image: nanducjc123/educationapprepo:latest
           imagePullPolicy: Always
 
           ports:
