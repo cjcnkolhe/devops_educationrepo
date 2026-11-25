@@ -1,7 +1,7 @@
 
-# --------------------------------
+# =====================================================
 # VPC
-# --------------------------------
+# =====================================================
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -20,9 +20,12 @@ module "vpc" {
     "10.0.2.0/24"
   ]
 
-  enable_nat_gateway = false
-
+  enable_nat_gateway     = false
   map_public_ip_on_launch = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = "1"
+  }
 
   tags = {
     Environment = "dev"
@@ -30,9 +33,10 @@ module "vpc" {
   }
 }
 
-# --------------------------------
-# EC2 Security Group
-# --------------------------------
+
+# =====================================================
+# JENKINS EC2 SECURITY GROUP
+# =====================================================
 
 resource "aws_security_group" "devops_sg" {
   name        = "devops-sg1"
@@ -56,17 +60,17 @@ resource "aws_security_group" "devops_sg" {
   }
 
   ingress {
-    description = "Kubernetes NodePort"
-    from_port   = 30007
-    to_port     = 30007
+    description = "SonarQube access"
+    from_port   = 9000
+    to_port     = 9000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
-    description = "SonarQube access"
-    from_port   = 9000
-    to_port     = 9000
+    description = "Kubernetes NodePort"
+    from_port   = 30007
+    to_port     = 30007
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -83,9 +87,10 @@ resource "aws_security_group" "devops_sg" {
   }
 }
 
-# --------------------------------
-# Jenkins IAM Role
-# --------------------------------
+
+# =====================================================
+# JENKINS IAM ROLE
+# =====================================================
 
 resource "aws_iam_role" "jenkins_role" {
   name = "jenkins-eks-role"
@@ -105,22 +110,53 @@ resource "aws_iam_role" "jenkins_role" {
   })
 }
 
+
+# =====================================================
+# JENKINS EKS IAM PERMISSIONS
+# =====================================================
+
+resource "aws_iam_role_policy" "jenkins_eks_policy" {
+  name = "jenkins-eks-policy"
+  role = aws_iam_role.jenkins_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [{
+      Effect = "Allow"
+
+      Action = [
+        "eks:ListClusters",
+        "eks:DescribeCluster",
+        "eks:ListNodegroups",
+        "eks:DescribeNodegroup"
+      ]
+
+      Resource = "*"
+    }]
+  })
+}
+
+
+# =====================================================
+# JENKINS INSTANCE PROFILE
+# =====================================================
+
 resource "aws_iam_instance_profile" "jenkins_profile" {
-  name = "jenkins-instance-profile"
+  name = "jenkins-eks-profile"
   role = aws_iam_role.jenkins_role.name
 }
 
-# --------------------------------
-# EC2 DevOps / Jenkins Server
-# --------------------------------
+
+# =====================================================
+# JENKINS EC2 INSTANCE
+# =====================================================
 
 resource "aws_instance" "devops_server" {
-  ami           = "ami-083cf4acad89c8905"
-  instance_type = "c7i-flex.large"
-  key_name      = "jenkinsKP"
-
-  subnet_id = module.vpc.public_subnets[0]
-
+  ami                         = "ami-083cf4acad89c8905"
+  instance_type               = "c7i-flex.large"
+  key_name                    = "jenkinsKP"
+  subnet_id                   = module.vpc.public_subnets[0]
   associate_public_ip_address = true
 
   vpc_security_group_ids = [
@@ -141,9 +177,10 @@ resource "aws_instance" "devops_server" {
   }
 }
 
-# --------------------------------
-# EKS Cluster
-# --------------------------------
+
+# =====================================================
+# EKS CLUSTER
+# =====================================================
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -159,8 +196,35 @@ module "eks" {
 
   endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
+  authentication_mode = "API_AND_CONFIG_MAP"
+
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.public_subnets
+
+
+  # ---------------------------------------------------
+  # EKS ADD-ONS
+  # ---------------------------------------------------
+
+  addons = {
+    vpc-cni = {
+      most_recent    = true
+      before_compute = true
+    }
+
+    kube-proxy = {
+      most_recent = true
+    }
+
+    coredns = {
+      most_recent = true
+    }
+  }
+
+
+  # ---------------------------------------------------
+  # EKS MANAGED NODE GROUP
+  # ---------------------------------------------------
 
   eks_managed_node_groups = {
     default = {
@@ -169,8 +233,17 @@ module "eks" {
       desired_size = var.desired_size
       min_size     = 1
       max_size     = 3
+
+      iam_role_additional_policies = {
+        AmazonEKS_CNI_Policy = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+      }
     }
   }
+
+
+  # ---------------------------------------------------
+  # JENKINS EKS ACCESS ENTRY
+  # ---------------------------------------------------
 
   access_entries = {
     jenkins = {
@@ -192,31 +265,21 @@ module "eks" {
     Environment = "dev"
     Project     = "java-devops"
   }
-
-  depends_on = [
-    aws_iam_role_policy.jenkins_eks
-  ]
 }
 
-# --------------------------------
-# Jenkins EKS Permission
-# --------------------------------
 
-resource "aws_iam_role_policy" "jenkins_eks" {
-  name = "jenkins-eks-permission"
-  role = aws_iam_role.jenkins_role.id
+# =====================================================
+# JENKINS TO EKS SECURITY GROUP ACCESS
+# =====================================================
 
-  policy = jsonencode({
-    Version = "2012-10-17"
+resource "aws_vpc_security_group_ingress_rule" "jenkins_to_eks" {
+  security_group_id = module.eks.cluster_primary_security_group_id
 
-    Statement = [{
-      Effect = "Allow"
+  description = "Allow Jenkins EC2 to access EKS API"
 
-      Action = [
-        "eks:DescribeCluster"
-      ]
+  referenced_security_group_id = aws_security_group.devops_sg.id
 
-      Resource = "*"
-    }]
-  })
+  from_port   = 443
+  to_port     = 443
+  ip_protocol = "tcp"
 }
