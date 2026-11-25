@@ -14,7 +14,7 @@ pipeline {
         AWS_REGION       = 'ap-south-1'
         EKS_CLUSTER_NAME = 'java-eks-cluster'
 
-        K8S_NAMESPACE    = 'default'
+        K8S_NAMESPACE    = 'education'
         DEPLOYMENT_NAME  = 'educationapp'
         CONTAINER_NAME   = 'educationapp'
 
@@ -25,7 +25,6 @@ pipeline {
 
     stages {
 
-        // 1. Git Checkout
         stage('Git Checkout') {
             steps {
                 git branch: 'master',
@@ -33,7 +32,6 @@ pipeline {
             }
         }
 
-        // 2. Maven Build
         stage('Maven Build') {
             steps {
                 sh '''
@@ -44,7 +42,6 @@ pipeline {
             }
         }
 
-        // 3. SonarQube Analysis
         stage('SonarQube Analysis') {
             steps {
                 withCredentials([
@@ -66,7 +63,6 @@ pipeline {
             }
         }
 
-        // 4. Docker Build
         stage('Docker Build') {
             steps {
                 sh '''
@@ -81,7 +77,6 @@ pipeline {
             }
         }
 
-        // 5. Docker Login & Push
         stage('Docker Login & Push') {
             steps {
                 withCredentials([
@@ -108,7 +103,6 @@ pipeline {
             }
         }
 
-        // 6. AWS EKS Connect
         stage('AWS EKS Connect') {
             steps {
                 sh '''
@@ -137,11 +131,13 @@ pipeline {
 
                     echo "Checking Kubernetes Nodes..."
                     $KUBECTL_BIN get nodes -o wide
+
+                    echo "Checking Namespace..."
+                    $KUBECTL_BIN get namespace $K8S_NAMESPACE
                 '''
             }
         }
 
-        // 7. Deploy to EKS
         stage('Deploy to EKS') {
             steps {
                 sh '''
@@ -150,14 +146,12 @@ pipeline {
                     echo "Applying Kubernetes Deployment..."
 
                     $KUBECTL_BIN apply \
-                        -f k8s/deployment.yaml \
-                        -n $K8S_NAMESPACE
+                        -f k8s/deployment.yaml
 
                     echo "Applying Kubernetes Service..."
 
                     $KUBECTL_BIN apply \
-                        -f k8s/service.yaml \
-                        -n $K8S_NAMESPACE
+                        -f k8s/service.yaml
 
                     echo "Updating Docker Image..."
 
@@ -176,7 +170,6 @@ pipeline {
             }
         }
 
-        // 8. EKS Deployment Verification
         stage('EKS Deployment Verification') {
             steps {
                 sh '''
@@ -214,6 +207,7 @@ pipeline {
             JENKINS PIPELINE SUCCESSFUL!
             Docker Image Pushed Successfully!
             Application Deployed to AWS EKS!
+            Namespace: education
             Cluster: java-eks-cluster
             ======================================
             '''
