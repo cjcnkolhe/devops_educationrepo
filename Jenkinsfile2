@@ -8,10 +8,13 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE   = 'nanducjc123/educationapprepo'
-        SONAR_HOST     = 'http://13.201.5.90:9000'
-        CONTAINER_NAME = 'educationapp'
-        APP_PORT       = '8081'
+        DOCKER_IMAGE     = 'nanducjc123/educationapprepo'
+        SONAR_HOST       = 'http://13.201.5.90:9000'
+        EKS_CLUSTER_NAME = 'education-eks-cluster'
+        AWS_REGION       = 'ap-south-1'
+        K8S_NAMESPACE    = 'default'
+        DEPLOYMENT_NAME  = 'educationapp'
+        CONTAINER_NAME   = 'educationapp'
     }
 
     stages {
@@ -51,7 +54,9 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
-                    docker build -t $DOCKER_IMAGE:latest .
+                    docker build \
+                        -t $DOCKER_IMAGE:$BUILD_NUMBER \
+                        -t $DOCKER_IMAGE:latest .
                 '''
             }
         }
@@ -72,6 +77,7 @@ pipeline {
                             -u "$DOCKER_USER" \
                             --password-stdin
 
+                        docker push $DOCKER_IMAGE:$BUILD_NUMBER
                         docker push $DOCKER_IMAGE:latest
 
                         docker logout
@@ -80,26 +86,59 @@ pipeline {
             }
         }
 
-        stage('Docker Pull') {
+        stage('AWS EKS Connect') {
             steps {
                 sh '''
-                    docker pull $DOCKER_IMAGE:latest
+                    aws --version
+                    kubectl version --client
+
+                    aws eks update-kubeconfig \
+                        --region $AWS_REGION \
+                        --name $EKS_CLUSTER_NAME
+
+                    echo "Connected to EKS Cluster"
+
+                    kubectl get nodes
                 '''
             }
         }
 
-        stage('Docker Run / Deploy') {
+        stage('Deploy to EKS') {
             steps {
                 sh '''
-                    docker rm -f $CONTAINER_NAME || true
+                    kubectl apply -f k8s/deployment.yaml \
+                        -n $K8S_NAMESPACE
 
-                    docker run -d \
-                        --name $CONTAINER_NAME \
-                        --restart unless-stopped \
-                        -p $APP_PORT:8080 \
-                        $DOCKER_IMAGE:latest
+                    kubectl apply -f k8s/service.yaml \
+                        -n $K8S_NAMESPACE
 
-                    docker ps
+                    kubectl set image \
+                        deployment/$DEPLOYMENT_NAME \
+                        $CONTAINER_NAME=$DOCKER_IMAGE:$BUILD_NUMBER \
+                        -n $K8S_NAMESPACE
+
+                    kubectl rollout status \
+                        deployment/$DEPLOYMENT_NAME \
+                        -n $K8S_NAMESPACE \
+                        --timeout=300s
+                '''
+            }
+        }
+
+        stage('EKS Deployment Verification') {
+            steps {
+                sh '''
+                    echo "===== EKS NODES ====="
+                    kubectl get nodes -o wide
+
+                    echo "===== PODS ====="
+                    kubectl get pods -n $K8S_NAMESPACE -o wide
+
+                    echo "===== DEPLOYMENT ====="
+                    kubectl get deployment -n $K8S_NAMESPACE
+
+                    echo "===== SERVICE ====="
+                    kubectl get service -n $K8S_NAMESPACE
                 '''
             }
         }
@@ -108,11 +147,12 @@ pipeline {
     post {
         success {
             echo 'Pipeline completed successfully!'
-            echo 'Docker application deployed successfully!'
+            echo 'Application deployed successfully to AWS EKS!'
         }
 
         failure {
             echo 'Pipeline failed!'
+            echo 'Check Jenkins console output for errors.'
         }
 
         always {
