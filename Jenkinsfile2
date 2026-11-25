@@ -21,6 +21,7 @@ pipeline {
         // Jenkins kubectl configuration
         KUBECONFIG       = '/var/lib/jenkins/.kube/config'
         PATH             = "/usr/local/bin:${env.PATH}"
+        KUBECTL_BIN = '/usr/bin/kubectl'
     }
 
     stages {
@@ -155,39 +156,39 @@ pipeline {
         // 7. Deploy to EKS
         // --------------------------------
 
-        stage('Deploy to EKS') {
-            steps {
-                sh '''
-                    set -e
+ 
+stage('AWS EKS Connect') {
+    steps {
+        sh '''
+            set -e
 
-                    echo "Applying Kubernetes Deployment..."
+            echo "Checking AWS CLI..."
+            aws --version
 
-                    kubectl apply \
-                        -f k8s/deployment.yaml \
-                        -n $K8S_NAMESPACE
+            echo "Checking kubectl..."
+            $KUBECTL_BIN version --client
 
-                    echo "Applying Kubernetes Service..."
+            echo "Checking AWS Identity..."
+            aws sts get-caller-identity
 
-                    kubectl apply \
-                        -f k8s/service.yaml \
-                        -n $K8S_NAMESPACE
+            echo "Connecting to AWS EKS..."
 
-                    echo "Updating Docker Image..."
+            aws eks update-kubeconfig \
+                --region $AWS_REGION \
+                --name $EKS_CLUSTER_NAME \
+                --kubeconfig $KUBECONFIG
 
-                    kubectl set image \
-                        deployment/$DEPLOYMENT_NAME \
-                        $CONTAINER_NAME=$DOCKER_IMAGE:$BUILD_NUMBER \
-                        -n $K8S_NAMESPACE
+            echo "Checking EKS Cluster..."
+            $KUBECTL_BIN cluster-info
 
-                    echo "Waiting for Deployment..."
+            echo "Checking Kubernetes Nodes..."
+            $KUBECTL_BIN get nodes -o wide
+        '''
+    }
+}
+      
 
-                    kubectl rollout status \
-                        deployment/$DEPLOYMENT_NAME \
-                        -n $K8S_NAMESPACE \
-                        --timeout=300s
-                '''
-            }
-        }
+ 
 
         // --------------------------------
         // 8. EKS Deployment Verification
