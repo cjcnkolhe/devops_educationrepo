@@ -1,0 +1,170 @@
+
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven'
+        jdk 'JDK17'
+    }
+
+    environment {
+        // Docker Hub
+        DOCKER_IMAGE = 'nanducjc123/educationapprepo'
+
+        // SonarQube
+        SONAR_HOST = 'http://13.201.5.90:9000'
+        SONAR_PROJECT_KEY = 'my-project'
+
+        // AWS EKS
+        AWS_REGION = 'ap-south-1'
+        EKS_CLUSTER = 'java-eks-cluster'
+        K8S_NAMESPACE = 'default'
+
+        // Kubernetes
+        APP_NAME = 'educationapp'
+        APP_PORT = '8080'
+        SERVICE_NAME = 'educationapp-service'
+    }
+
+    stages {
+
+        // 1. Git Checkout
+        stage('Git Checkout') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/cjcnkolhe/educationapp.git'
+            }
+        }
+
+        // 2. Maven Build
+        stage('Maven Build') {
+            steps {
+                sh '''
+                    java -version
+                    mvn -version
+                    mvn clean package
+                '''
+            }
+        }
+
+        // 3. SonarQube Analysis
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonar-token',
+                        variable: 'SONAR_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+                        -Dsonar.projectKey=$SONAR_PROJECT_KEY \
+                        -Dsonar.projectName=$SONAR_PROJECT_KEY \
+                        -Dsonar.host.url=$SONAR_HOST \
+                        -Dsonar.token=$SONAR_TOKEN \
+                        -Dsonar.java.binaries=target/classes
+                    '''
+                }
+            }
+        }
+
+        // 4. Docker Build
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build \
+                    -t $DOCKER_IMAGE:$BUILD_NUMBER \
+                    -t $DOCKER_IMAGE:latest .
+                '''
+            }
+        }
+
+        // 5. Docker Login & Push
+        stage('Docker Login & Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                        set +x
+
+                        echo "$DOCKER_PASS" | docker login \
+                        -u "$DOCKER_USER" \
+                        --password-stdin
+
+                        docker push $DOCKER_IMAGE:$BUILD_NUMBER
+                        docker push $DOCKER_IMAGE:latest
+
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        // 6. AWS EKS Connect
+        stage('AWS EKS Connect') {
+            steps {
+                sh '''
+                    aws eks update-kubeconfig \
+                    --region $AWS_REGION \
+                    --name $EKS_CLUSTER
+
+                    kubectl get nodes
+                '''
+            }
+        }
+
+        // 7. Kubernetes Deploy
+        stage('Kubernetes Deploy') {
+            steps {
+                sh '''
+                    sed -i "s|image: .*|image: $DOCKER_IMAGE:$BUILD_NUMBER|" \
+                    k8s/deployment.yaml
+
+                    kubectl apply -f k8s/deployment.yaml \
+                    -n $K8S_NAMESPACE
+
+                    kubectl apply -f k8s/service.yaml \
+                    -n $K8S_NAMESPACE
+                '''
+            }
+        }
+
+        // 8. Deployment Verification
+        stage('Verification') {
+            steps {
+                sh '''
+                    kubectl rollout status deployment/$APP_NAME \
+                    -n $K8S_NAMESPACE \
+                    --timeout=300s
+
+                    kubectl get deployments -n $K8S_NAMESPACE
+
+                    kubectl get pods -n $K8S_NAMESPACE
+
+                    kubectl get svc -n $K8S_NAMESPACE
+                '''
+            }
+        }
+
+    }
+
+    // Post Actions
+    post {
+        success {
+            echo 'Application Deployed Successfully!'
+        }
+
+        failure {
+            echo 'Pipeline Failed! Check Console Output.'
+        }
+
+        always {
+            echo 'Jenkins Pipeline Finished.'
+        }
+    }
+}
