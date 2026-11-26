@@ -1,1 +1,157 @@
 
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven'
+        jdk 'JDK17'
+    }
+
+    environment {
+        DOCKER_IMAGE = 'nanducjc123/educationapprepo'
+
+        SONAR_HOST = 'http://13.126.225.125:9000'
+        SONAR_PROJECT_KEY = 'my-project'
+
+        AWS_REGION = 'ap-south-1'
+        EKS_CLUSTER = 'java-eks-cluster'
+
+        K8S_NAMESPACE = 'default'
+        APP_NAME = 'educationapp'
+        SERVICE_NAME = 'educationapp-service'
+
+        KUBECONFIG = '/home/ubuntu/.kube/config'
+    }
+
+    stages {
+
+        stage('Git Checkout') {
+            steps {
+                git branch: 'master',
+                    url: 'https://github.com/cjcnkolhe/devops_educationrepo.git'
+            }
+        }
+
+        stage('Maven Build') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonar-token',
+                        variable: 'SONAR_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+                        -Dsonar.projectKey=$SONAR_PROJECT_KEY \
+                        -Dsonar.host.url=$SONAR_HOST \
+                        -Dsonar.token=$SONAR_TOKEN \
+                        -Dsonar.java.binaries=target/classes
+                    '''
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build \
+                    -t $DOCKER_IMAGE:$BUILD_NUMBER .
+                '''
+            }
+        }
+
+        stage('Docker Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login \
+                        -u "$DOCKER_USER" --password-stdin
+
+                        docker push $DOCKER_IMAGE:$BUILD_NUMBER
+
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        stage('AWS EKS Connect') {
+            steps {
+                sh '''
+                    aws eks update-kubeconfig \
+                    --region $AWS_REGION \
+                    --name $EKS_CLUSTER \
+                    --kubeconfig $KUBECONFIG
+
+                    kubectl get nodes
+                '''
+            }
+        }
+
+        stage('Kubernetes Deploy') {
+            steps {
+                sh '''
+                    sed -i "s|image: .*|image: $DOCKER_IMAGE:$BUILD_NUMBER|" \
+                    k8s/deployment.yaml
+
+                    kubectl apply -f k8s/deployment.yaml \
+                    -n $K8S_NAMESPACE
+
+                    kubectl apply -f k8s/service.yaml \
+                    -n $K8S_NAMESPACE
+                '''
+            }
+        }
+
+        stage('Verification') {
+            steps {
+                sh '''
+                    kubectl rollout status deployment/$APP_NAME \
+                    -n $K8S_NAMESPACE --timeout=300s
+
+                    kubectl get pods -n $K8S_NAMESPACE
+
+                    kubectl get svc -n $K8S_NAMESPACE
+                '''
+            }
+        }
+
+        stage('Application URL') {
+            steps {
+                sh '''
+                    LB_HOST=$(kubectl get svc $SERVICE_NAME \
+                    -n $K8S_NAMESPACE \
+                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+                    if [ -z "$LB_HOST" ]; then
+                        echo "LoadBalancer is still provisioning."
+                    else
+                        echo "Application URL: http://$LB_HOST"
+                    fi
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Application deployed successfully on AWS EKS!'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check Jenkins console output.'
+        }
+    }
+}
