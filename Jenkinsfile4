@@ -48,36 +48,34 @@ pipeline {
         }
 
         // 3. SonarQube Analysis
-      
-stage('SonarQube Analysis') {
-    steps {
-        withCredentials([
-            string(
-                credentialsId: 'sonar-token',
-                variable: 'SONAR_TOKEN'
-            )
-        ]) {
-            sh '''
-                echo "Checking SonarQube Connection..."
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'sonar-token',
+                        variable: 'SONAR_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        echo "Checking SonarQube Connection..."
 
-                curl --fail --connect-timeout 10 \
-                $SONAR_HOST/api/system/status
+                        curl --fail --connect-timeout 10 \
+                        $SONAR_HOST/api/system/status
 
-                echo "Starting SonarQube Analysis..."
+                        echo "Starting SonarQube Analysis..."
 
-                mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
-                -Dsonar.projectKey=$SONAR_PROJECT_KEY \
-                -Dsonar.projectName=$SONAR_PROJECT_KEY \
-                -Dsonar.host.url=$SONAR_HOST \
-                -Dsonar.token=$SONAR_TOKEN \
-                -Dsonar.java.binaries=target/classes
+                        mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+                        -Dsonar.projectKey=$SONAR_PROJECT_KEY \
+                        -Dsonar.projectName=$SONAR_PROJECT_KEY \
+                        -Dsonar.host.url=$SONAR_HOST \
+                        -Dsonar.token=$SONAR_TOKEN \
+                        -Dsonar.java.binaries=target/classes
 
-                echo "SonarQube Analysis Completed!"
-            '''
+                        echo "SonarQube Analysis Completed!"
+                    '''
+                }
+            }
         }
-    }
-}
-
 
         // 4. Docker Build
         stage('Docker Build') {
@@ -133,11 +131,21 @@ stage('SonarQube Analysis') {
         stage('Kubernetes Deploy') {
             steps {
                 sh '''
+                    echo "Checking Namespace..."
+
+                    kubectl get namespace $K8S_NAMESPACE
+
+                    echo "Updating Docker Image..."
+
                     sed -i "s|image: .*|image: $DOCKER_IMAGE:$BUILD_NUMBER|" \
                     k8s/deployment.yaml
 
+                    echo "Deploying Application..."
+
                     kubectl apply -f k8s/deployment.yaml \
                     -n $K8S_NAMESPACE
+
+                    echo "Deploying Service..."
 
                     kubectl apply -f k8s/service.yaml \
                     -n $K8S_NAMESPACE
@@ -149,19 +157,23 @@ stage('SonarQube Analysis') {
         stage('Verification') {
             steps {
                 sh '''
+                    echo "Checking Deployment Rollout..."
+
                     kubectl rollout status deployment/$APP_NAME \
                     -n $K8S_NAMESPACE \
                     --timeout=300s
 
+                    echo "Deployments:"
                     kubectl get deployments -n $K8S_NAMESPACE
 
+                    echo "Pods:"
                     kubectl get pods -n $K8S_NAMESPACE
 
+                    echo "Services:"
                     kubectl get svc -n $K8S_NAMESPACE
                 '''
             }
         }
-
     }
 
     // Post Actions
