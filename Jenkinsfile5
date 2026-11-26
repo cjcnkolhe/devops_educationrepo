@@ -20,7 +20,7 @@ pipeline {
         APP_NAME = 'educationapp'
         SERVICE_NAME = 'educationapp-service'
 
-        KUBECONFIG = '/home/ubuntu/.kube/config'
+        KUBECONFIG = '/var/lib/jenkins/.kube/config'
     }
 
     stages {
@@ -41,10 +41,7 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withCredentials([
-                    string(
-                        credentialsId: 'sonar-token',
-                        variable: 'SONAR_TOKEN'
-                    )
+                    string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')
                 ]) {
                     sh '''
                         mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
@@ -60,8 +57,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
-                    docker build \
-                    -t $DOCKER_IMAGE:$BUILD_NUMBER .
+                    docker build -t $DOCKER_IMAGE:$BUILD_NUMBER .
                 '''
             }
         }
@@ -90,6 +86,8 @@ pipeline {
         stage('AWS EKS Connect') {
             steps {
                 sh '''
+                    mkdir -p "$(dirname "$KUBECONFIG")"
+
                     aws eks update-kubeconfig \
                     --region $AWS_REGION \
                     --name $EKS_CLUSTER \
@@ -135,10 +133,10 @@ pipeline {
                     -n $K8S_NAMESPACE \
                     -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-                    if [ -z "$LB_HOST" ]; then
-                        echo "LoadBalancer is still provisioning."
-                    else
+                    if [ -n "$LB_HOST" ]; then
                         echo "Application URL: http://$LB_HOST"
+                    else
+                        echo "LoadBalancer is still provisioning."
                     fi
                 '''
             }
@@ -151,7 +149,7 @@ pipeline {
         }
 
         failure {
-            echo 'Pipeline failed. Check Jenkins console output.'
+            echo 'Pipeline failed! Check Console Output.'
         }
     }
 }
