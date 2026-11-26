@@ -12,7 +12,7 @@ pipeline {
         DOCKER_IMAGE = 'nanducjc123/educationapprepo'
 
         // SonarQube
-        SONAR_HOST = 'http://13.201.5.90:9000'
+        SONAR_HOST = 'http://13.126.225.125:9000'
         SONAR_PROJECT_KEY = 'my-project'
 
         // AWS EKS
